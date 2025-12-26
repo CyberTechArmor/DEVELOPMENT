@@ -7,6 +7,7 @@ A repository for learnings, best practices, and industry standards accumulated d
 | Topic | Description |
 |-------|-------------|
 | [Prisma & TypeScript Workflows](./guides/prisma-typescript-workflows.md) | Schema generation, migrations, seeding, and avoiding common pitfalls with AI coding |
+| [Docker Dependency Management](./guides/docker-dependency-management.md) | Version pinning, avoiding npx pitfalls, eliminating redundant build steps, and build auditing |
 
 ## Purpose
 
