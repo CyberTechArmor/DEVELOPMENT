@@ -31,6 +31,8 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "Making sure it works" | **Build auditing** or **dependency auditing** |
 | "The tool isn't there in prod" | **Runtime dependency missing** (devDependencies excluded) |
 | "Need to rebuild from scratch" | **Cache invalidation** or **clean rebuild** |
+| "It's in the wrong node_modules" | **Dependency not hoisted** (npm workspaces) |
+| "The lockfile is stale" | **Lockfile out of sync** with package.json |
 
 ---
 
@@ -161,6 +163,65 @@ Production containers typically run `npm ci --omit=dev`, which **excludes devDep
 docker build --no-cache -t myapp .
 ```
 
+### 6. Force hoisting in npm workspaces (monorepos)
+
+In npm workspaces, dependencies are installed where they're declared. If `prisma` is only in `apps/api/package.json`, it installs to `apps/api/node_modules/.bin/prisma` — **not** the root.
+
+**Real Example:**
+
+```
+monorepo/
+├── package.json              # No prisma here
+├── node_modules/             # No prisma binary here!
+└── apps/
+    └── api/
+        ├── package.json      # "prisma": "^5.22.0"
+        └── node_modules/
+            └── .bin/
+                └── prisma    # Prisma is here, not accessible from /app
+```
+
+**The Docker problem:**
+
+```dockerfile
+# Dockerfile copies from root
+COPY --from=builder /app/node_modules ./node_modules
+
+# But prisma is in /app/apps/api/node_modules/.bin/prisma
+# This path doesn't exist in the production container!
+RUN /app/node_modules/.bin/prisma migrate deploy  # ❌ Not found
+```
+
+**The fix — add to root package.json:**
+
+```json
+{
+  "name": "monorepo",
+  "workspaces": ["apps/*"],
+  "dependencies": {
+    "prisma": "^5.22.0"
+  }
+}
+```
+
+This forces npm to **hoist** prisma to the root `node_modules/`, making it available at `/app/node_modules/.bin/prisma`.
+
+**Verification:**
+
+```bash
+# After npm install, check where prisma lives
+ls node_modules/.bin/prisma  # Should exist at root
+
+# Or check package-lock.json
+grep -A2 '"node_modules/prisma"' package-lock.json
+```
+
+**Remember:** After modifying root `package.json`, regenerate the lockfile:
+
+```bash
+npm install --package-lock-only --ignore-scripts
+```
+
 ---
 
 ## Prompting AI to Avoid This Issue
@@ -193,6 +254,15 @@ When working with AI on Docker builds, include these prompts:
 3. Does the Dockerfile use --omit=dev or --production flag?"
 ```
 
+### For npm workspaces (monorepos):
+```
+"Check for dependency hoisting issues:
+1. Is this a monorepo with npm workspaces?
+2. Are CLI tools like prisma only in a workspace package.json, not the root?
+3. Does the Dockerfile copy from root node_modules but expect workspace binaries?
+4. Verify package-lock.json shows the tool under 'node_modules/[tool]' at root level"
+```
+
 ### General audit prompt:
 ```
 "Audit this Dockerfile and shell scripts for:
@@ -200,7 +270,9 @@ When working with AI on Docker builds, include these prompts:
 2. npx commands that might download different versions
 3. Version mismatches between stages
 4. Working directory issues in docker compose exec/run commands
-5. CLI tools in devDependencies that are needed at runtime"
+5. CLI tools in devDependencies that are needed at runtime
+6. Workspace dependencies not hoisted to root (monorepos)
+7. package-lock.json out of sync with package.json changes"
 ```
 
 ---
@@ -325,6 +397,8 @@ echo -e "\n=== Audit Complete ==="
 | Prisma can't find schema in monorepo | `cd` to directory containing `prisma/schema.prisma` first |
 | Runtime CLI in `devDependencies` | Move to `dependencies` if used in production |
 | Cache not cleared after package.json fix | Rebuild with `docker build --no-cache` |
+| CLI in workspace but not root (monorepo) | Add to root `package.json` to force hoisting |
+| Lockfile not regenerated after fix | Run `npm install --package-lock-only --ignore-scripts` |
 
 ---
 
@@ -337,6 +411,9 @@ echo -e "\n=== Audit Complete ==="
 - [ ] Shell scripts use `/app/node_modules/.bin/` instead of `npx`
 - [ ] Shell scripts `cd` to correct directory before running Prisma commands
 - [ ] Runtime CLIs (prisma, etc.) are in `dependencies`, not `devDependencies`
+- [ ] For monorepos: CLI tools are in root `package.json` (not just workspace)
+- [ ] `package-lock.json` regenerated after any `package.json` changes
 - [ ] `docker build --no-cache` succeeds (especially after package.json changes)
 - [ ] Container starts and passes health check
 - [ ] Versions inside container match `package.json`
+- [ ] CLI binaries exist at expected paths inside container
