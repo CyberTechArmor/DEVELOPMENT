@@ -78,6 +78,37 @@ COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 Note: `^5.22.0` allows minor updates. For Docker reproducibility, consider exact versions.
 
+### 4. Use correct paths in shell scripts that run container commands
+
+Shell scripts (install.sh, update.sh) that run `docker compose exec/run` face **two compounding issues**:
+
+1. `npx` downloads latest version (not your pinned version)
+2. Wrong working directory means Prisma can't find the schema
+
+**Real Example:**
+
+```bash
+# ❌ Bad - multiple problems
+docker compose run --rm api npx prisma migrate deploy
+
+# Problems:
+# 1. npx downloads Prisma 7.x (not the 5.x in package.json)
+# 2. Runs from /app but schema is at /app/apps/api/prisma/schema.prisma
+# 3. Even if version was right, "prisma" directory not found error
+```
+
+```bash
+# ✅ Good - explicit paths solve both issues
+docker compose run --rm api sh -c "cd /app/apps/api && /app/node_modules/.bin/prisma migrate deploy"
+
+# Why this works:
+# 1. Uses installed Prisma 5.x binary from node_modules
+# 2. cd to correct directory where schema.prisma lives
+# 3. Prisma finds schema at ./prisma/schema.prisma (relative to cwd)
+```
+
+**Key insight:** In monorepos, the working directory for Prisma commands must be where `prisma/schema.prisma` lives, not the root.
+
 ---
 
 ## Prompting AI to Avoid This Issue
@@ -94,12 +125,21 @@ When working with AI on Docker builds, include these prompts:
 "Check if any npx commands in the Dockerfile might resolve to different versions than package.json specifies"
 ```
 
+### When reviewing shell scripts:
+```
+"Check install.sh and update.sh for:
+1. npx commands inside docker compose exec/run that might download wrong versions
+2. Commands that assume wrong working directory (especially in monorepos)
+3. Prisma commands - verify they run from the directory containing prisma/schema.prisma"
+```
+
 ### General audit prompt:
 ```
-"Audit this Dockerfile for:
+"Audit this Dockerfile and shell scripts for:
 1. Redundant build steps (generating artifacts that are already copied)
 2. npx commands that might download different versions
-3. Version mismatches between stages"
+3. Version mismatches between stages
+4. Working directory issues in docker compose exec/run commands"
 ```
 
 ---
@@ -219,6 +259,9 @@ echo -e "\n=== Audit Complete ==="
 | Using `^` versions in Docker builds | Consider exact versions for reproducibility |
 | Not auditing before deploy | Add audit script to CI/CD pipeline |
 | Ignoring `npm audit` warnings | Review and fix or document accepted risks |
+| `npx` in shell scripts with `docker compose` | Use full path: `/app/node_modules/.bin/prisma` |
+| Wrong working directory in container | Use `sh -c "cd /correct/path && command"` |
+| Prisma can't find schema in monorepo | `cd` to directory containing `prisma/schema.prisma` first |
 
 ---
 
@@ -228,6 +271,8 @@ echo -e "\n=== Audit Complete ==="
 - [ ] `npm outdated` reviewed — no unexpected major version drift
 - [ ] Dockerfile has no `npx` commands without local installation
 - [ ] No redundant build/generate steps after `COPY --from`
+- [ ] Shell scripts use `/app/node_modules/.bin/` instead of `npx`
+- [ ] Shell scripts `cd` to correct directory before running Prisma commands
 - [ ] `docker build --no-cache` succeeds
 - [ ] Container starts and passes health check
 - [ ] Versions inside container match `package.json`
