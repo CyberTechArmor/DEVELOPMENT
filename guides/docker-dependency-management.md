@@ -1,5 +1,109 @@
 # Docker Dependency Management & Build Auditing
 
+> **Scope:** This guide focuses on **production** container builds. Development environments have different considerations (hot reloading, debugging tools, etc.).
+
+---
+
+## Production vs Development: Key Differences
+
+| Aspect | Development | Production |
+|--------|-------------|------------|
+| `npm install` | Full install (all deps) | `npm ci --omit=dev` |
+| Source maps | Enabled | Disabled (security) |
+| Debug tools | Included | Excluded |
+| Environment | `NODE_ENV=development` | `NODE_ENV=production` |
+| Image size | Not critical | Minimize |
+| Build cache | Aggressive | Clean builds for releases |
+
+**Critical production flags:**
+```dockerfile
+# Production Dockerfile patterns
+ENV NODE_ENV=production
+RUN npm ci --omit=dev    # Excludes devDependencies
+```
+
+---
+
+## Version Pinning Strategy & Risk Assessment
+
+### Pinning Strategies Compared
+
+| Strategy | Example | Reproducibility | Security Updates | Risk Level |
+|----------|---------|-----------------|------------------|------------|
+| **Exact** | `"5.22.0"` | ✅ Highest | ❌ Manual | Low (stable) |
+| **Patch** | `"~5.22.0"` | Medium | ⚠️ Patch only | Low |
+| **Minor** | `"^5.22.0"` | Lower | ⚠️ Minor+Patch | Medium |
+| **Latest** | `"*"` or `npx` | ❌ None | ✅ Automatic | **High** |
+
+### When to Use Each Strategy
+
+**Exact versions (`5.22.0`)** — Use for:
+- Production Docker builds (reproducibility critical)
+- CI/CD pipelines
+- When a newer version has known breaking changes
+
+**Caret versions (`^5.22.0`)** — Acceptable for:
+- Development environments
+- Non-critical dependencies
+- When you have good test coverage
+
+**Never use in production:**
+- `*` or `latest` tags
+- `npx` without local installation (downloads latest)
+
+### Documenting Version Decisions
+
+When pinning to a non-latest version, document the reason:
+
+```json
+{
+  "dependencies": {
+    "@prisma/client": "5.22.0",
+    "prisma": "5.22.0"
+  },
+  "_versionNotes": {
+    "prisma": "Pinned to 5.x - Prisma 6.x/7.x have breaking schema changes (removed 'url' from datasource). Upgrade requires schema migration. See: https://www.prisma.io/docs/orm/more/upgrade-guides"
+  }
+}
+```
+
+Or in a `VERSIONS.md` file:
+
+```markdown
+## Pinned Versions
+
+| Package | Version | Reason | Risk if Upgraded | Review Date |
+|---------|---------|--------|------------------|-------------|
+| prisma | 5.22.0 | 6.x/7.x break schema format | Build fails | 2025-03-01 |
+| node | 20-alpine | LTS until 2026-04 | None expected | 2025-06-01 |
+```
+
+### Security Implications of Pinned Versions
+
+**Risks of staying on older versions:**
+- Missing security patches
+- Accumulating technical debt
+- Harder upgrades over time
+
+**Mitigation:**
+1. Run `npm audit` regularly (weekly minimum)
+2. Subscribe to security advisories for critical deps
+3. Schedule quarterly version reviews
+4. Document a clear upgrade path
+
+```bash
+# Check for security issues in production deps only
+npm audit --production
+
+# See what's outdated
+npm outdated
+
+# Check specific package changelog
+npm view prisma versions --json | tail -20
+```
+
+---
+
 ## The Problem: `npx` Downloads Latest Versions
 
 When using `npx <package>` in Docker (or anywhere), if the package isn't installed locally, **npx downloads the latest version** — not the version in your `package.json`.
@@ -33,6 +137,8 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "Need to rebuild from scratch" | **Cache invalidation** or **clean rebuild** |
 | "It's in the wrong node_modules" | **Dependency not hoisted** (npm workspaces) |
 | "The lockfile is stale" | **Lockfile out of sync** with package.json |
+| "It's still in dev mode" | **Production environment misconfiguration** |
+| "Why is it using an old version?" | **Intentional version pinning** (document the reason!) |
 
 ---
 
@@ -272,7 +378,21 @@ When working with AI on Docker builds, include these prompts:
 4. Working directory issues in docker compose exec/run commands
 5. CLI tools in devDependencies that are needed at runtime
 6. Workspace dependencies not hoisted to root (monorepos)
-7. package-lock.json out of sync with package.json changes"
+7. package-lock.json out of sync with package.json changes
+8. NODE_ENV=production is set in the final stage
+9. npm ci --omit=dev is used (not npm install)
+10. No debug tools or source maps in production image"
+```
+
+### Production readiness prompt:
+```
+"Verify this is production-ready:
+1. Is NODE_ENV set to 'production'?
+2. Are devDependencies excluded (--omit=dev)?
+3. Are there any localhost URLs in environment variables?
+4. Are pinned versions documented with upgrade paths?
+5. Has npm audit --production been run recently?
+6. Are source maps disabled or excluded?"
 ```
 
 ---
@@ -399,21 +519,96 @@ echo -e "\n=== Audit Complete ==="
 | Cache not cleared after package.json fix | Rebuild with `docker build --no-cache` |
 | CLI in workspace but not root (monorepo) | Add to root `package.json` to force hoisting |
 | Lockfile not regenerated after fix | Run `npm install --package-lock-only --ignore-scripts` |
+| `NODE_ENV` not set to production | Add `ENV NODE_ENV=production` to Dockerfile |
+| Using `npm install` instead of `npm ci` | Use `npm ci --omit=dev` for reproducible prod builds |
+| Pinned version without documentation | Add `_versionNotes` in package.json or VERSIONS.md |
+| Source maps in production | Set `sourceMap: false` or exclude from COPY |
 
 ---
 
 ## Pre-Deploy Checklist
 
-- [ ] `npm audit` shows no critical vulnerabilities (or documented exceptions)
+### Security & Dependencies
+- [ ] `npm audit --production` shows no critical vulnerabilities (or documented exceptions)
 - [ ] `npm outdated` reviewed — no unexpected major version drift
-- [ ] Dockerfile has no `npx` commands without local installation
+- [ ] Pinned versions documented with rationale (see Version Pinning section)
+- [ ] Security advisory subscriptions active for critical deps
+
+### Dockerfile & Build
+- [ ] `NODE_ENV=production` is set
+- [ ] Uses `npm ci --omit=dev` (not `npm install`)
+- [ ] No `npx` commands without local installation
 - [ ] No redundant build/generate steps after `COPY --from`
+- [ ] Source maps disabled or excluded from final image
+- [ ] No debug tools or dev utilities in production image
+
+### Shell Scripts & Runtime
 - [ ] Shell scripts use `/app/node_modules/.bin/` instead of `npx`
 - [ ] Shell scripts `cd` to correct directory before running Prisma commands
 - [ ] Runtime CLIs (prisma, etc.) are in `dependencies`, not `devDependencies`
 - [ ] For monorepos: CLI tools are in root `package.json` (not just workspace)
+
+### Build Verification
 - [ ] `package-lock.json` regenerated after any `package.json` changes
 - [ ] `docker build --no-cache` succeeds (especially after package.json changes)
 - [ ] Container starts and passes health check
+- [ ] `NODE_ENV` inside container is `production`
 - [ ] Versions inside container match `package.json`
 - [ ] CLI binaries exist at expected paths inside container
+- [ ] No devDependencies present in production container
+
+### Verification Commands
+
+```bash
+# Verify production environment
+docker run --rm myapp printenv NODE_ENV  # Should print: production
+
+# Check no devDependencies leaked
+docker run --rm myapp npm ls --omit=dev 2>&1 | grep -E "typescript|eslint|vitest"
+# Should return nothing
+
+# Verify correct versions
+docker run --rm myapp npm ls prisma @prisma/client
+
+# Check binary paths
+docker run --rm myapp ls -la /app/node_modules/.bin/prisma
+```
+
+---
+
+## Production Environment Validation
+
+Always validate these settings before production deploy:
+
+```bash
+#!/bin/bash
+# scripts/validate-production.sh
+
+echo "=== Production Environment Validation ==="
+
+# Check NODE_ENV
+if [ "$NODE_ENV" != "production" ]; then
+  echo "❌ NODE_ENV is not 'production': $NODE_ENV"
+  exit 1
+fi
+echo "✅ NODE_ENV=production"
+
+# Check for debug flags
+if [ -n "$DEBUG" ]; then
+  echo "⚠️  DEBUG is set: $DEBUG"
+fi
+
+# Check Prisma database URL is not localhost
+if echo "$DATABASE_URL" | grep -q "localhost"; then
+  echo "❌ DATABASE_URL contains localhost - not production!"
+  exit 1
+fi
+echo "✅ DATABASE_URL appears to be production"
+
+# Verify no dev dependencies
+if npm ls 2>/dev/null | grep -qE "devDependencies"; then
+  echo "⚠️  devDependencies may be present"
+fi
+
+echo "=== Validation Complete ==="
+```
