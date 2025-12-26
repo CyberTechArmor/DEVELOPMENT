@@ -29,6 +29,8 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "npx grabbed the wrong one" | **npx resolved to latest instead of pinned version** |
 | "Cleaning up the build" | **Build artifact deduplication** or **eliminating redundant build steps** |
 | "Making sure it works" | **Build auditing** or **dependency auditing** |
+| "The tool isn't there in prod" | **Runtime dependency missing** (devDependencies excluded) |
+| "Need to rebuild from scratch" | **Cache invalidation** or **clean rebuild** |
 
 ---
 
@@ -109,6 +111,56 @@ docker compose run --rm api sh -c "cd /app/apps/api && /app/node_modules/.bin/pr
 
 **Key insight:** In monorepos, the working directory for Prisma commands must be where `prisma/schema.prisma` lives, not the root.
 
+### 5. Put runtime-required CLIs in `dependencies`, not `devDependencies`
+
+Production containers typically run `npm ci --omit=dev`, which **excludes devDependencies**. If a CLI tool is needed at runtime, it must be in `dependencies`.
+
+**Real Example:**
+
+```json
+{
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"  // ⚠️ Won't be in production container!
+  }
+}
+```
+
+**What happens:**
+- `npm ci --omit=dev` installs only `dependencies`
+- `prisma` CLI is not installed in production
+- `npx prisma migrate deploy` fails (binary not found)
+- Or worse: `npx` downloads Prisma 7.x as a fallback
+
+**The fix:**
+
+```json
+{
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "prisma": "^5.22.0"  // ✅ Available in production for migrations
+  }
+}
+```
+
+**Rule of thumb:** If you run a command in production (migrations, seeding, etc.), its package belongs in `dependencies`.
+
+| Tool | Typical Use | Where It Belongs |
+|------|-------------|------------------|
+| `prisma` | Migrations in prod | `dependencies` |
+| `typescript` | Build only | `devDependencies` |
+| `eslint` | Linting only | `devDependencies` |
+| `tsx` | Dev server only | `devDependencies` |
+
+**After fixing package.json**, you must rebuild from scratch:
+
+```bash
+# Docker layer cache has old npm ci result
+docker build --no-cache -t myapp .
+```
+
 ---
 
 ## Prompting AI to Avoid This Issue
@@ -133,13 +185,22 @@ When working with AI on Docker builds, include these prompts:
 3. Prisma commands - verify they run from the directory containing prisma/schema.prisma"
 ```
 
+### When checking package.json:
+```
+"Check if any CLI tools in devDependencies are used in production:
+1. Is 'prisma' in devDependencies but migrations run in production?
+2. Are there any scripts in the Dockerfile or install.sh that use devDependency packages?
+3. Does the Dockerfile use --omit=dev or --production flag?"
+```
+
 ### General audit prompt:
 ```
 "Audit this Dockerfile and shell scripts for:
 1. Redundant build steps (generating artifacts that are already copied)
 2. npx commands that might download different versions
 3. Version mismatches between stages
-4. Working directory issues in docker compose exec/run commands"
+4. Working directory issues in docker compose exec/run commands
+5. CLI tools in devDependencies that are needed at runtime"
 ```
 
 ---
@@ -262,6 +323,8 @@ echo -e "\n=== Audit Complete ==="
 | `npx` in shell scripts with `docker compose` | Use full path: `/app/node_modules/.bin/prisma` |
 | Wrong working directory in container | Use `sh -c "cd /correct/path && command"` |
 | Prisma can't find schema in monorepo | `cd` to directory containing `prisma/schema.prisma` first |
+| Runtime CLI in `devDependencies` | Move to `dependencies` if used in production |
+| Cache not cleared after package.json fix | Rebuild with `docker build --no-cache` |
 
 ---
 
@@ -273,6 +336,7 @@ echo -e "\n=== Audit Complete ==="
 - [ ] No redundant build/generate steps after `COPY --from`
 - [ ] Shell scripts use `/app/node_modules/.bin/` instead of `npx`
 - [ ] Shell scripts `cd` to correct directory before running Prisma commands
-- [ ] `docker build --no-cache` succeeds
+- [ ] Runtime CLIs (prisma, etc.) are in `dependencies`, not `devDependencies`
+- [ ] `docker build --no-cache` succeeds (especially after package.json changes)
 - [ ] Container starts and passes health check
 - [ ] Versions inside container match `package.json`
