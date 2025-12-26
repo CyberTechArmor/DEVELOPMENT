@@ -139,6 +139,8 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "The lockfile is stale" | **Lockfile out of sync** with package.json |
 | "It's still in dev mode" | **Production environment misconfiguration** |
 | "Why is it using an old version?" | **Intentional version pinning** (document the reason!) |
+| "Build takes forever" | **npx downloading on every build** (use local binary) |
+| "Prisma can't find libssl" | **Missing Alpine system dependency** (add openssl) |
 
 ---
 
@@ -326,6 +328,54 @@ grep -A2 '"node_modules/prisma"' package-lock.json
 
 ```bash
 npm install --package-lock-only --ignore-scripts
+```
+
+### 7. Install required system dependencies in Alpine images
+
+Alpine Linux is minimal — many packages that Node.js tools expect are missing. Prisma, in particular, requires OpenSSL.
+
+**The error:**
+```
+Prisma failed to detect the libssl/openssl required for the native binary target
+```
+
+**The fix — install openssl in all stages that use Prisma:**
+
+```dockerfile
+# Builder stage - needs openssl for prisma generate
+FROM node:20-alpine AS builder
+RUN apk add --no-cache python3 make g++ curl openssl
+# ... npm ci, prisma generate, etc.
+
+# Production stage - needs openssl for prisma runtime
+FROM node:20-alpine AS production
+RUN apk add --no-cache curl openssl
+# ... copy from builder, etc.
+```
+
+**Common Alpine dependencies by tool:**
+
+| Tool | Required Packages | Why |
+|------|-------------------|-----|
+| Prisma | `openssl` | Native binary requires libssl |
+| bcrypt/argon2 | `python3 make g++` | Native compilation |
+| node-gyp | `python3 make g++` | Native addon building |
+| Health checks | `curl` or `wget` | HTTP health probes |
+| Sharp (images) | `vips-dev` | Image processing |
+
+**Build time savings:**
+
+Using `npx prisma generate` in Docker downloads Prisma each time (~4-5 minutes). Using the local binary is instant:
+
+```dockerfile
+# ❌ Bad - downloads prisma every build (~4-5 min)
+RUN npx prisma generate
+
+# ✅ Good - uses already-installed prisma (instant)
+RUN ./node_modules/.bin/prisma generate
+
+# ✅ In monorepo - adjust path accordingly
+RUN cd apps/api && ../../node_modules/.bin/prisma generate
 ```
 
 ---
@@ -523,6 +573,8 @@ echo -e "\n=== Audit Complete ==="
 | Using `npm install` instead of `npm ci` | Use `npm ci --omit=dev` for reproducible prod builds |
 | Pinned version without documentation | Add `_versionNotes` in package.json or VERSIONS.md |
 | Source maps in production | Set `sourceMap: false` or exclude from COPY |
+| Missing OpenSSL in Alpine for Prisma | Add `apk add --no-cache openssl` in Dockerfile |
+| Using `npx` slows build by 4-5 min | Use `./node_modules/.bin/prisma` instead |
 
 ---
 
@@ -537,8 +589,9 @@ echo -e "\n=== Audit Complete ==="
 ### Dockerfile & Build
 - [ ] `NODE_ENV=production` is set
 - [ ] Uses `npm ci --omit=dev` (not `npm install`)
-- [ ] No `npx` commands without local installation
+- [ ] No `npx` commands — use `./node_modules/.bin/` paths instead
 - [ ] No redundant build/generate steps after `COPY --from`
+- [ ] Alpine images have required system deps (`openssl` for Prisma, etc.)
 - [ ] Source maps disabled or excluded from final image
 - [ ] No debug tools or dev utilities in production image
 
