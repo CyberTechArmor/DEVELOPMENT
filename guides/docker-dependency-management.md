@@ -147,6 +147,7 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "No migrations found" | **Wrong Prisma command** (use `db push` if no migrations dir) |
 | "tsc can't find module" | **Standalone compilation failure** (tsc can't resolve imports without tsconfig) |
 | "tsx can't find @prisma/client" | **Monorepo module resolution** (create symlinks, NODE_PATH won't work) |
+| "@prisma/client did not initialize yet" | **Generated client wrong location** (copy .prisma to root node_modules) |
 | "Build step passed but it failed" | **Silent failure** (command has `\|\| true` masking errors) |
 | "Build killed" or OOM | **Out of memory** (add swap space, limit Node memory) |
 | "Build takes forever on VPS" | **Resource constrained** (1-core + low RAM needs optimization) |
@@ -559,6 +560,48 @@ RUN mkdir -p /app/apps/api/node_modules/@prisma && \
 1. tsx looks for `@prisma/client` at `/app/apps/api/node_modules/@prisma/client`
 2. Symlink points to `/app/node_modules/@prisma/client`
 3. tsx follows the symlink and finds the module
+
+#### Critical: Copy `.prisma/client` to root node_modules
+
+Even after fixing `@prisma/client` resolution, you may get:
+
+```
+Error: @prisma/client did not initialize yet. Please run "prisma generate"
+```
+
+**Why this happens:**
+- `@prisma/client` is found at `/app/apps/api/node_modules/@prisma/client`
+- But internally, `@prisma/client` imports from `.prisma/client` relative to **root** node_modules
+- It looks at `/app/node_modules/.prisma/client/` (doesn't exist!)
+- The generated client is at `/app/apps/api/node_modules/.prisma/client/`
+
+**The fix — copy generated client to root:**
+
+```dockerfile
+# Copy generated .prisma/client to ROOT node_modules (where @prisma/client expects it)
+COPY --from=api-builder /app/apps/api/node_modules/.prisma ./node_modules/.prisma
+
+# Also copy to apps/api for completeness
+COPY --from=api-builder /app/apps/api/node_modules/.prisma ./apps/api/node_modules/.prisma
+```
+
+**Complete monorepo Prisma setup:**
+```dockerfile
+# 1. Copy root node_modules (has @prisma/client if hoisted)
+COPY --from=deps /app/node_modules ./node_modules
+
+# 2. Copy generated .prisma client to root (critical!)
+COPY --from=api-builder /app/apps/api/node_modules/.prisma ./node_modules/.prisma
+
+# 3. Copy workspace node_modules (has .prisma if not hoisted)
+COPY --from=api-builder /app/apps/api/node_modules ./apps/api/node_modules
+
+# 4. Ensure @prisma/client is in workspace for tsx resolution
+RUN if [ ! -d /app/apps/api/node_modules/@prisma/client ]; then \
+      mkdir -p /app/apps/api/node_modules/@prisma && \
+      cp -r /app/node_modules/@prisma/client /app/apps/api/node_modules/@prisma/; \
+    fi
+```
 
 **Run the seed script:**
 ```bash
@@ -1163,6 +1206,7 @@ echo -e "\n=== Audit Complete ==="
 | `migrate deploy` with no migrations | Use `db push` if no `prisma/migrations/` directory |
 | `tsc seed.ts` fails with imports | Use `tsx` (handles imports) or compile entire project |
 | tsx can't find npm packages in monorepo | Create symlinks in Dockerfile (NODE_PATH doesn't work with tsx) |
+| "prisma generate" error after finding client | Copy `.prisma/client` to root node_modules, not just workspace |
 | Silent build failures with `\|\| true` | Remove `\|\| true` or add explicit error handling |
 | Build OOMs on low-resource VPS | Add swap space; use `NODE_OPTIONS=--max-old-space-size=512` |
 | Docker build freezes on 1GB VPS | Configure swap (2x RAM), limit concurrent processes |
