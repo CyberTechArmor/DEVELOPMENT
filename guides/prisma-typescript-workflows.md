@@ -10,6 +10,7 @@ When working with Prisma and TypeScript, use these precise terms:
 | "Seeding the database" | **Database Seeding** | `npx prisma db seed` |
 | "Deploying the schema" | **Running Migrations** | `npx prisma migrate deploy` (prod) |
 | "Updating the schema" | **Running Migrations** | `npx prisma migrate dev` (dev) |
+| "Pushing schema directly" | **Schema Push** | `npx prisma db push` (no migrations) |
 
 ---
 
@@ -57,6 +58,102 @@ npx prisma migrate deploy
 - Applies existing migration files only
 - Does NOT create new migrations
 - Safe for CI/CD pipelines
+
+### 4. Schema Push vs Migrations (`db push` vs `migrate deploy`)
+
+Two different approaches to applying schema changes:
+
+| Command | Use Case | Creates Migration Files? | Safe for Production? |
+|---------|----------|--------------------------|----------------------|
+| `prisma db push` | Prototyping, no migrations needed | ❌ No | ⚠️ Use with caution |
+| `prisma migrate deploy` | Production with migration history | ✅ Uses existing | ✅ Yes |
+
+**When to use `db push`:**
+```bash
+npx prisma db push --skip-generate
+```
+- Project doesn't use migration files (no `prisma/migrations/` directory)
+- Rapid prototyping or initial setup
+- Schema-first development without migration history
+- Docker/containerized deployments where schema IS the source of truth
+
+**When to use `migrate deploy`:**
+```bash
+npx prisma migrate deploy
+```
+- Project has `prisma/migrations/` directory with migration files
+- Need audit trail of schema changes
+- Team collaboration requiring consistent migrations
+- Rollback capability needed
+
+**Common error when using wrong command:**
+```
+Error: P3005
+The database schema is not empty. Read more about how to baseline
+an existing production database: https://pris.ly/d/migrate-baseline
+```
+
+This means you're trying to use `migrate deploy` but there are no migration files. Either:
+1. Create a baseline migration: `npx prisma migrate dev --name init`
+2. Or use `db push` if you don't need migrations
+
+### 5. Seeding in Production
+
+The default `prisma db seed` command runs the seed script specified in `package.json`:
+
+```json
+{
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}
+```
+
+**Problem:** `tsx` is typically a devDependency and won't be in production containers.
+
+**Solution 1: Compile seed.ts during Docker build**
+
+```dockerfile
+# In Dockerfile, after npm run build:
+RUN cd apps/api && ../../node_modules/.bin/tsc prisma/seed.ts \
+    --outDir prisma \
+    --esModuleInterop \
+    --skipLibCheck \
+    --resolveJsonModule || true
+```
+
+Then run with Node directly:
+```bash
+# Instead of: npx prisma db seed
+node prisma/seed.js
+```
+
+**Solution 2: Use a JavaScript seed file**
+
+Write `prisma/seed.js` instead of `seed.ts`:
+```javascript
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+async function main() {
+  // Seed logic here
+}
+
+main()
+  .catch(console.error)
+  .finally(() => prisma.$disconnect());
+```
+
+**Solution 3: Include tsx in production dependencies**
+
+Only if seeding is truly needed at runtime (usually not recommended):
+```json
+{
+  "dependencies": {
+    "tsx": "^4.7.0"  // Move from devDependencies
+  }
+}
+```
 
 ---
 
@@ -161,8 +258,14 @@ npx prisma migrate dev --name your_migration_name
 # Apply existing migrations (production/CI)
 npx prisma migrate deploy
 
-# Seed the database
+# Push schema directly without migrations (prototyping/Docker)
+npx prisma db push --skip-generate
+
+# Seed the database (development with tsx)
 npx prisma db seed
+
+# Seed in production (compiled JavaScript)
+node prisma/seed.js
 
 # Reset database (drops all data!)
 npx prisma migrate reset
@@ -175,6 +278,9 @@ npx prisma validate
 
 # Format schema file
 npx prisma format
+
+# Check if migrations directory exists
+ls prisma/migrations/ 2>/dev/null || echo "No migrations - use db push"
 ```
 
 ---
@@ -188,3 +294,6 @@ npx prisma format
 | Importing model types directly | Use `Prisma.ModelGetPayload<{...}>` pattern |
 | Pushing without type-checking | Add pre-commit hook with `tsc --noEmit` |
 | Confusing `migrate dev` vs `migrate deploy` | `dev` creates migrations; `deploy` applies existing ones |
+| Using `migrate deploy` with no migrations | Check for `prisma/migrations/`; use `db push` if missing |
+| `prisma db seed` fails in production | Compile `seed.ts` to JS during build; run with `node` |
+| `tsx` not found in container | `tsx` is devDependency; compile TypeScript or use JS seed |

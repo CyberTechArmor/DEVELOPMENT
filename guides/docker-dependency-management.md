@@ -143,6 +143,8 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "Prisma can't find libssl" | **Missing Alpine system dependency** (add openssl) |
 | "Password authentication failed" | **Volume credential mismatch** (old creds in volume) |
 | "Works first time but fails on re-install" | **Stale Docker volumes** (need `down -v`) |
+| "tsx/ts-node not found" | **TypeScript runner missing** (compile to JS during build) |
+| "No migrations found" | **Wrong Prisma command** (use `db push` if no migrations dir) |
 
 ---
 
@@ -444,6 +446,59 @@ docker compose pull
 docker compose up -d
 ```
 
+### 9. Compile TypeScript scripts for production
+
+TypeScript runners like `tsx`, `ts-node`, and `ts-jest` are typically devDependencies. If your project has TypeScript scripts (like `prisma/seed.ts`) that need to run in production, they must be compiled during build.
+
+**The error:**
+```
+sh: tsx: not found
+```
+
+**The problem:**
+```json
+{
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"  // tsx is devDependency!
+  }
+}
+```
+
+**The fix — compile during Docker build:**
+
+```dockerfile
+# After building the main application, compile any TypeScript scripts
+RUN cd apps/api && ../../node_modules/.bin/tsc prisma/seed.ts \
+    --outDir prisma \
+    --esModuleInterop \
+    --skipLibCheck \
+    --resolveJsonModule || true
+```
+
+**Then run with Node in production:**
+```bash
+# Instead of: npx prisma db seed (uses tsx)
+node prisma/seed.js
+```
+
+**Common TypeScript scripts that need compilation:**
+
+| Script | Location | Production Use |
+|--------|----------|----------------|
+| Seed script | `prisma/seed.ts` | Initial data setup |
+| DB migrations | `scripts/migrate.ts` | Schema updates |
+| Admin scripts | `scripts/*.ts` | Maintenance tasks |
+
+**Alternative: Keep TypeScript out of production entirely**
+
+Write production scripts in JavaScript from the start:
+```javascript
+// prisma/seed.js - works without tsx
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+// ...
+```
+
 ---
 
 ## Prompting AI to Avoid This Issue
@@ -643,6 +698,8 @@ echo -e "\n=== Audit Complete ==="
 | Using `npx` slows build by 4-5 min | Use `./node_modules/.bin/prisma` instead |
 | DB auth fails after re-install | Old volume has old creds; use `docker compose down -v` |
 | `down -v` in update script | Never use `-v` in updates — destroys data! |
+| `tsx` / `ts-node` not found in prod | Compile `.ts` scripts during build; run with `node` |
+| `migrate deploy` with no migrations | Use `db push` if no `prisma/migrations/` directory |
 
 ---
 
