@@ -151,6 +151,8 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "Build step passed but it failed" | **Silent failure** (command has `\|\| true` masking errors) |
 | "Build killed" or OOM | **Out of memory** (add swap space, limit Node memory) |
 | "Build takes forever on VPS" | **Resource constrained** (1-core + low RAM needs optimization) |
+| "No renewals were attempted" (certbot) | **Entrypoint override needed** (use `--entrypoint ""` for certonly) |
+| "host not found in upstream" (nginx) | **Container not running** (start dependent containers first) |
 
 ---
 
@@ -607,6 +609,36 @@ RUN if [ ! -d /app/apps/api/node_modules/@prisma/client ]; then \
 ```bash
 docker compose run --rm api sh -c "cd /app && tsx apps/api/prisma/seed.ts"
 ```
+
+#### Alternative: Regenerate Prisma in production image
+
+If copying `.prisma/client` between stages causes initialization errors, regenerate it in the production image:
+
+```dockerfile
+# Copy root node_modules
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy api dist, prisma schema, and types
+COPY --from=api-builder /app/apps/api/dist ./apps/api/dist
+COPY --from=api-builder /app/apps/api/prisma ./apps/api/prisma
+COPY --from=api-builder /app/apps/api/src/types ./apps/api/src/types
+
+# Regenerate Prisma client in production (ensures correct paths)
+RUN cd /app/apps/api && /app/node_modules/.bin/prisma generate
+
+# Create symlinks for tsx module resolution
+RUN mkdir -p /app/apps/api/node_modules/@prisma /app/apps/api/node_modules/.prisma && \
+    ln -sf /app/node_modules/@prisma/client /app/apps/api/node_modules/@prisma/client && \
+    ln -sf /app/node_modules/.prisma/client /app/apps/api/node_modules/.prisma/client && \
+    ln -sf /app/node_modules/@node-rs /app/apps/api/node_modules/@node-rs
+```
+
+**Why this works:**
+- `prisma generate` creates `.prisma/client` with correct paths for the current environment
+- No path mismatch issues from copying between stages
+- Symlinks let tsx find modules while using the properly initialized client
+
+**Trade-off:** Adds ~10-30 seconds to build time but eliminates initialization errors.
 
 **Important: Clear Docker cache after Dockerfile changes**
 
@@ -1211,6 +1243,8 @@ echo -e "\n=== Audit Complete ==="
 | Build OOMs on low-resource VPS | Add swap space; use `NODE_OPTIONS=--max-old-space-size=512` |
 | Docker build freezes on 1GB VPS | Configure swap (2x RAM), limit concurrent processes |
 | Dockerfile changed but old behavior | Docker layer caching; use `docker system prune -af` or `--no-cache` |
+| certbot "No renewals attempted" | Override entrypoint: `--entrypoint "" certbot certbot certonly` |
+| nginx "host not found in upstream" | Start API container before nginx; use `depends_on` with healthcheck |
 
 ---
 
