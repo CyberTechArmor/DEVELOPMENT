@@ -799,6 +799,167 @@ docker pull registry.example.com/myapp:latest
 
 This eliminates the build bottleneck entirely on low-resource VPS.
 
+### 12. Install and uninstall script patterns
+
+Production install scripts should support CLI options for flexibility while having sensible defaults.
+
+#### Install script options
+
+```bash
+#!/bin/bash
+
+# Command line options with defaults
+NO_CACHE=false
+SKIP_HARDWARE_CHECK=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --no-cache)
+            NO_CACHE=true
+            shift
+            ;;
+        --skip-hardware-check)
+            SKIP_HARDWARE_CHECK=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --no-cache            Force Docker to rebuild without using cache"
+            echo "  --skip-hardware-check Skip hardware detection and optimization"
+            echo "  --help, -h            Show this help message"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+```
+
+**Key principles:**
+- `--no-cache` should be **optional, not default** — leverage Docker cache for fast rebuilds
+- Include hardware detection that users can skip if needed
+- Always provide `--help` output
+
+**Build with optional cache bypass:**
+```bash
+build_images() {
+    local build_opts=""
+    if [ "$NO_CACHE" = true ]; then
+        build_opts="--no-cache"
+        log_info "Building without cache..."
+    fi
+
+    docker compose build $build_opts
+}
+```
+
+#### Uninstall script with graduated cleanup
+
+Uninstall scripts should offer levels of cleanup, with the safest option as default:
+
+```bash
+#!/bin/bash
+
+REMOVE_DATA=false
+REMOVE_IMAGES=false
+REMOVE_BUILD_CACHE=false
+FORCE=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --remove-data)
+            REMOVE_DATA=true
+            shift
+            ;;
+        --remove-images)
+            REMOVE_IMAGES=true
+            shift
+            ;;
+        --remove-build-cache)
+            REMOVE_BUILD_CACHE=true
+            shift
+            ;;
+        --all)
+            REMOVE_DATA=true
+            REMOVE_IMAGES=true
+            REMOVE_BUILD_CACHE=true
+            shift
+            ;;
+        -f|--force)
+            FORCE=true
+            shift
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+    esac
+done
+```
+
+**Cleanup levels:**
+
+| Option | What it removes | Safe for re-install? |
+|--------|-----------------|---------------------|
+| (default) | Containers, networks, install dir | ✅ Yes |
+| `--remove-data` | + Database volumes | ⚠️ Data lost |
+| `--remove-images` | + Docker images | ✅ Yes (slow rebuild) |
+| `--remove-build-cache` | + Build cache | ✅ Yes (slow rebuild) |
+| `--all` | Everything | ⚠️ Data lost, slow rebuild |
+
+**Remove build cache function:**
+```bash
+remove_build_cache() {
+    if [[ "$REMOVE_BUILD_CACHE" != true ]]; then
+        return 0
+    fi
+
+    log_info "Removing Docker build cache..."
+    docker builder prune -af 2>/dev/null || true
+    docker system prune -f 2>/dev/null || true
+    log_success "Docker build cache removed"
+}
+```
+
+**Completion message with next steps:**
+```bash
+print_completion() {
+    echo ""
+    echo "Uninstall completed:"
+    if [[ "$REMOVE_DATA" == true ]]; then
+        echo "    ✓ Database volumes removed"
+    fi
+    if [[ "$REMOVE_IMAGES" == true ]]; then
+        echo "    ✓ Docker images removed"
+    fi
+    if [[ "$REMOVE_BUILD_CACHE" == true ]]; then
+        echo "    ✓ Docker build cache removed"
+    fi
+    echo "    ✓ Installation directory removed"
+    echo ""
+
+    # Show what's still there
+    if [[ "$REMOVE_DATA" != true ]]; then
+        echo "Note: Database volumes preserved. To remove:"
+        echo "  docker volume ls | grep appname"
+        echo "  docker volume rm <volume_name>"
+    fi
+}
+```
+
+**Usage examples:**
+```bash
+./uninstall.sh                  # Safe: keeps data, images
+./uninstall.sh --remove-data    # Removes volumes (data loss!)
+./uninstall.sh --all            # Complete cleanup
+./uninstall.sh --force --all    # No prompts, remove everything
+```
+
 ---
 
 ## Prompting AI to Avoid This Issue
