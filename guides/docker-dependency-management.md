@@ -146,6 +146,7 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "tsx/ts-node not found" | **TypeScript runner missing** (compile to JS or install tsx globally) |
 | "No migrations found" | **Wrong Prisma command** (use `db push` if no migrations dir) |
 | "tsc can't find module" | **Standalone compilation failure** (tsc can't resolve imports without tsconfig) |
+| "tsx can't find @prisma/client" | **Monorepo module resolution** (use NODE_PATH to root node_modules) |
 | "Build step passed but it failed" | **Silent failure** (command has `\|\| true` masking errors) |
 | "Build killed" or OOM | **Out of memory** (add swap space, limit Node memory) |
 | "Build takes forever on VPS" | **Resource constrained** (1-core + low RAM needs optimization) |
@@ -505,6 +506,48 @@ COPY --from=builder /app/apps/api/src/utils ./apps/api/src/utils
 ```bash
 # In install.sh or docker compose
 docker compose run --rm api sh -c "cd /app/apps/api && tsx prisma/seed.ts"
+```
+
+#### Monorepo module resolution: Use NODE_PATH
+
+In monorepos, tsx may fail to find npm packages like `@prisma/client` because modules are installed at the root `node_modules/`, not in the subdirectory where tsx runs.
+
+**The error:**
+```
+Error: Cannot find package '@prisma/client'
+```
+
+**Why it happens:**
+```
+monorepo/
+├── node_modules/           ← @prisma/client is here
+│   └── @prisma/client/
+└── apps/
+    └── api/
+        └── prisma/
+            └── seed.ts     ← tsx runs here, can't find modules
+```
+
+tsx looks for `node_modules` relative to the script, but packages are hoisted to the root.
+
+**The fix — set NODE_PATH:**
+```bash
+# Run from root with NODE_PATH pointing to root node_modules
+docker compose run --rm api sh -c "cd /app && NODE_PATH=/app/node_modules tsx apps/api/prisma/seed.ts"
+
+# Why this works:
+# 1. cd /app - run from monorepo root
+# 2. NODE_PATH=/app/node_modules - tells Node where to find packages
+# 3. tsx apps/api/prisma/seed.ts - path from root to script
+```
+
+**Before vs After:**
+```bash
+# ❌ Fails - tsx can't find @prisma/client
+docker compose run --rm api sh -c "cd /app/apps/api && tsx prisma/seed.ts"
+
+# ✅ Works - NODE_PATH helps find modules
+docker compose run --rm api sh -c "cd /app && NODE_PATH=/app/node_modules tsx apps/api/prisma/seed.ts"
 ```
 
 #### Option B: Compile during build (Only for scripts WITHOUT imports)
@@ -929,6 +972,7 @@ echo -e "\n=== Audit Complete ==="
 | `tsx` / `ts-node` not found in prod | Install `tsx` globally in prod OR use it only if TS has imports |
 | `migrate deploy` with no migrations | Use `db push` if no `prisma/migrations/` directory |
 | `tsc seed.ts` fails with imports | Use `tsx` (handles imports) or compile entire project |
+| tsx can't find npm packages in monorepo | Set `NODE_PATH=/app/node_modules` and run from root |
 | Silent build failures with `\|\| true` | Remove `\|\| true` or add explicit error handling |
 | Build OOMs on low-resource VPS | Add swap space; use `NODE_OPTIONS=--max-old-space-size=512` |
 | Docker build freezes on 1GB VPS | Configure swap (2x RAM), limit concurrent processes |
