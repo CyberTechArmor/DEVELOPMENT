@@ -141,6 +141,8 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "Why is it using an old version?" | **Intentional version pinning** (document the reason!) |
 | "Build takes forever" | **npx downloading on every build** (use local binary) |
 | "Prisma can't find libssl" | **Missing Alpine system dependency** (add openssl) |
+| "Password authentication failed" | **Volume credential mismatch** (old creds in volume) |
+| "Works first time but fails on re-install" | **Stale Docker volumes** (need `down -v`) |
 
 ---
 
@@ -378,6 +380,70 @@ RUN ./node_modules/.bin/prisma generate
 RUN cd apps/api && ../../node_modules/.bin/prisma generate
 ```
 
+### 8. Handle Docker volume credential persistence
+
+Docker volumes persist data across container restarts and rebuilds. For databases like PostgreSQL, **credentials are stored when the volume is first initialized** — subsequent rebuilds with new credentials will fail.
+
+**The problem:**
+
+```bash
+# First install - generates random password, stores in volume
+DB_PASSWORD=abc123  # Saved to postgres_data volume
+
+# Re-install - generates NEW random password
+DB_PASSWORD=xyz789  # Volume still has abc123 → authentication fails!
+```
+
+**The error:**
+```
+FATAL: password authentication failed for user "postgres"
+```
+
+**The fix — clean volumes before fresh install:**
+
+```bash
+# In install.sh, before building images:
+docker compose down -v 2>/dev/null || true
+```
+
+The `-v` flag removes named volumes, ensuring credentials are re-initialized with the new password.
+
+**When to clean volumes vs preserve them:**
+
+| Scenario | Action | Why |
+|----------|--------|-----|
+| Fresh install | `docker compose down -v` | Start clean |
+| Re-install with new creds | `docker compose down -v` | Old creds in volume |
+| Update with same creds | `docker compose down` (no -v) | Preserve data |
+| Production backup | Never use `-v` without backup | Data loss! |
+
+**Install script pattern:**
+
+```bash
+# install.sh - for fresh installations
+log_info "Cleaning up any existing containers and volumes..."
+docker compose down -v 2>/dev/null || true
+
+# Generate new random credentials
+DB_PASSWORD=$(openssl rand -base64 32)
+echo "DB_PASSWORD=$DB_PASSWORD" >> .env
+
+# Now build and start
+docker compose up -d
+```
+
+**Update script pattern:**
+
+```bash
+# update.sh - preserves data
+log_info "Stopping containers (keeping volumes)..."
+docker compose down  # No -v flag!
+
+# Pull/build new images
+docker compose pull
+docker compose up -d
+```
+
 ---
 
 ## Prompting AI to Avoid This Issue
@@ -575,6 +641,8 @@ echo -e "\n=== Audit Complete ==="
 | Source maps in production | Set `sourceMap: false` or exclude from COPY |
 | Missing OpenSSL in Alpine for Prisma | Add `apk add --no-cache openssl` in Dockerfile |
 | Using `npx` slows build by 4-5 min | Use `./node_modules/.bin/prisma` instead |
+| DB auth fails after re-install | Old volume has old creds; use `docker compose down -v` |
+| `down -v` in update script | Never use `-v` in updates — destroys data! |
 
 ---
 
@@ -609,6 +677,12 @@ echo -e "\n=== Audit Complete ==="
 - [ ] Versions inside container match `package.json`
 - [ ] CLI binaries exist at expected paths inside container
 - [ ] No devDependencies present in production container
+
+### Volume & Credential Management
+- [ ] Install script uses `docker compose down -v` for clean state
+- [ ] Update script does NOT use `-v` (preserves data)
+- [ ] Database credentials match between `.env` and existing volumes
+- [ ] Production volumes backed up before any destructive operations
 
 ### Verification Commands
 
