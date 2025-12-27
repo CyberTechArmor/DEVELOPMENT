@@ -11,6 +11,14 @@ A repository for learnings, best practices, and industry standards accumulated d
 | [Security & Compliance](./guides/security-compliance.md) | SOC 2, HIPAA, PCI DSS, GDPR, ISO 27001 — unified compliance mapping, container security, encryption |
 | [Technology Stack](./guides/technology-stack.md) | Fastify, React, TypeScript, PostgreSQL, Redis — stack recommendations with compliance considerations |
 
+## Review Prompts
+
+Prompts for AI-assisted code review:
+
+| Prompt | Use Case |
+|--------|----------|
+| [Docker & Monorepo Review](./prompts/docker-monorepo-review.md) | Review Dockerfile, install scripts, and monorepo patterns against best practices |
+
 ## Purpose
 
 This guide serves as a living document to capture:
