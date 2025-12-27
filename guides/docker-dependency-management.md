@@ -153,6 +153,7 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "Build takes forever on VPS" | **Resource constrained** (1-core + low RAM needs optimization) |
 | "No renewals were attempted" (certbot) | **Entrypoint override needed** (use `--entrypoint ""` for certonly) |
 | "host not found in upstream" (nginx) | **Container not running** (start dependent containers first) |
+| "ENCRYPTION_KEY must be 64 characters" | **Secret too short** (generate 64+ char key, not 32) |
 
 ---
 
@@ -933,6 +934,22 @@ build_images() {
 }
 ```
 
+**Secret generation — check application requirements:**
+```bash
+# Generate secrets with configurable length
+generate_secret() {
+    local length=${1:-32}
+    openssl rand -base64 $((length * 2)) | tr -dc 'a-zA-Z0-9' | head -c $length
+}
+
+# Common secret lengths (check your app's requirements!)
+jwt_secret=$(generate_secret 32)       # JWT typically 32+
+encryption_key=$(generate_secret 64)   # AES-256 needs 64 hex chars
+api_key=$(generate_secret 48)          # API keys vary
+```
+
+**Common mistake:** Generating 32-character secrets when the application requires 64. Always check error messages like "ENCRYPTION_KEY must be at least 64 characters".
+
 #### Uninstall script with graduated cleanup
 
 Uninstall scripts should offer levels of cleanup, with the safest option as default:
@@ -1245,6 +1262,7 @@ echo -e "\n=== Audit Complete ==="
 | Dockerfile changed but old behavior | Docker layer caching; use `docker system prune -af` or `--no-cache` |
 | certbot "No renewals attempted" | Override entrypoint: `--entrypoint "" certbot certbot certonly` |
 | nginx "host not found in upstream" | Start API container before nginx; use `depends_on` with healthcheck |
+| ENCRYPTION_KEY too short (32 chars) | Generate 64+ characters: `openssl rand -base64 48 \| tr -dc 'a-zA-Z0-9' \| head -c 64` |
 
 ---
 
