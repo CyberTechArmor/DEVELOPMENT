@@ -154,6 +154,10 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "No renewals were attempted" (certbot) | **Entrypoint override needed** (use `--entrypoint ""` for certonly) |
 | "host not found in upstream" (nginx) | **Container not running** (start dependent containers first) |
 | "ENCRYPTION_KEY must be 64 characters" | **Secret too short** (generate 64+ char key, not 32) |
+| "nginx reload doesn't pick up new container" | **DNS caching** (use `docker compose restart nginx` not `nginx -s reload`) |
+| "Cannot find module 'date-fns-tz'" | **npm workspaces hoisting** (add to root package.json + symlink in Dockerfile) |
+| "Cannot set property context of #<Request>" | **Fastify 4.x breaking change** (use `requestContext` instead of `context`) |
+| "Infinite loading spinner" (frontend) | **Auth not initialized** (call `checkAuth()` in App useEffect) |
 
 ---
 
@@ -937,6 +941,7 @@ build_images() {
 **Secret generation — check application requirements:**
 ```bash
 # Generate secrets with configurable length
+# NOTE: Use 2x length in base64 to ensure enough chars after filtering
 generate_secret() {
     local length=${1:-32}
     openssl rand -base64 $((length * 2)) | tr -dc 'a-zA-Z0-9' | head -c $length
@@ -947,6 +952,8 @@ jwt_secret=$(generate_secret 32)       # JWT typically 32+
 encryption_key=$(generate_secret 64)   # AES-256 needs 64 hex chars
 api_key=$(generate_secret 48)          # API keys vary
 ```
+
+**Why `length * 2`:** Base64 encoding includes `+`, `/`, `=` characters. After filtering to alphanumeric only with `tr -dc 'a-zA-Z0-9'`, you get roughly 75% of the original length. Using `length * 2` ensures you always have enough characters.
 
 **Common mistake:** Generating 32-character secrets when the application requires 64. Always check error messages like "ENCRYPTION_KEY must be at least 64 characters".
 
@@ -1263,6 +1270,10 @@ echo -e "\n=== Audit Complete ==="
 | certbot "No renewals attempted" | Override entrypoint: `--entrypoint "" certbot certbot certonly` |
 | nginx "host not found in upstream" | Start API container before nginx; use `depends_on` with healthcheck |
 | ENCRYPTION_KEY too short (32 chars) | Generate 64+ characters: `openssl rand -base64 48 \| tr -dc 'a-zA-Z0-9' \| head -c 64` |
+| nginx reload doesn't update DNS | Use `docker compose restart nginx` — `nginx -s reload` caches DNS from startup |
+| date-fns-tz (or other deps) not found | Add to root package.json for hoisting + symlink in Dockerfile for tsx |
+| Fastify "Cannot set property context" | Fastify 4.x breaking change: use `request.requestContext` instead of `request.context` |
+| Frontend infinite loading spinner | Auth not initialized — call `checkAuth()` in App's useEffect on mount |
 
 ---
 
