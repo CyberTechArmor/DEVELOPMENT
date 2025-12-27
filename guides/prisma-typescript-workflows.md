@@ -297,3 +297,25 @@ ls prisma/migrations/ 2>/dev/null || echo "No migrations - use db push"
 | Using `migrate deploy` with no migrations | Check for `prisma/migrations/`; use `db push` if missing |
 | `prisma db seed` fails in production | Compile `seed.ts` to JS during build; run with `node` |
 | `tsx` not found in container | `tsx` is devDependency; compile TypeScript or use JS seed |
+
+---
+
+## References & Resources
+
+### Official Documentation
+- [Prisma Documentation](https://www.prisma.io/docs) — Complete Prisma reference
+- [Prisma Migrate Guide](https://www.prisma.io/docs/orm/prisma-migrate) — Migration workflows
+- [Prisma Client API](https://www.prisma.io/docs/orm/prisma-client) — Query building
+- [TypeScript Handbook](https://www.typescriptlang.org/docs/handbook/) — TypeScript reference
+
+### Upgrade Guides
+- [Prisma Upgrade Guides](https://www.prisma.io/docs/orm/more/upgrade-guides) — Version migration paths
+- [Prisma 5 to 6 Migration](https://www.prisma.io/docs/orm/more/upgrade-guides/upgrading-versions/upgrading-to-prisma-6) — Breaking changes
+
+### Best Practices
+- [Prisma Best Practices](https://www.prisma.io/docs/orm/prisma-client/setup-and-configuration/databases-connections) — Connection management
+- [TypeScript Best Practices](https://www.typescriptlang.org/docs/handbook/declaration-files/do-s-and-don-ts.html) — Type patterns
+
+### Security
+- [OWASP SQL Injection Prevention](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html) — Prisma uses parameterized queries by default
+- [Database Security Best Practices](https://cheatsheetseries.owasp.org/cheatsheets/Database_Security_Cheat_Sheet.html) — General DB security

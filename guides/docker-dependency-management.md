@@ -796,3 +796,35 @@ fi
 
 echo "=== Validation Complete ==="
 ```
+
+---
+
+## References & Resources
+
+### Official Documentation
+- [Docker Best Practices](https://docs.docker.com/build/building/best-practices/) — Official Docker build guide
+- [Node.js Docker Best Practices](https://github.com/nodejs/docker-node/blob/main/docs/BestPractices.md) — Node.js specific patterns
+- [npm Documentation](https://docs.npmjs.com/) — Package management reference
+- [Alpine Linux Packages](https://pkgs.alpinelinux.org/packages) — Find required system deps
+
+### Security Resources
+- [OWASP Docker Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Docker_Security_Cheat_Sheet.html) — Container security
+- [CIS Docker Benchmark](https://www.cisecurity.org/benchmark/docker) — Industry security standards
+- [Snyk Container Security](https://snyk.io/learn/container-security/) — Vulnerability scanning
+- [Docker Scout](https://docs.docker.com/scout/) — Image analysis and CVE detection
+- [Trivy](https://aquasecurity.github.io/trivy/) — Open-source vulnerability scanner
+
+### npm Security
+- [npm Audit Documentation](https://docs.npmjs.com/cli/v10/commands/npm-audit) — Vulnerability auditing
+- [Snyk Advisor](https://snyk.io/advisor/) — Package health scores
+- [Socket.dev](https://socket.dev/) — Supply chain security
+
+### Build Optimization
+- [Docker Multi-stage Builds](https://docs.docker.com/build/building/multi-stage/) — Reduce image size
+- [Docker Layer Caching](https://docs.docker.com/build/cache/) — Speed up builds
+- [BuildKit](https://docs.docker.com/build/buildkit/) — Advanced build features
+
+### Compliance & Standards
+- [SOC 2 Container Requirements](https://www.vanta.com/resources/soc-2-compliance-checklist) — Audit requirements
+- [HIPAA Technical Safeguards](https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html) — Healthcare compliance
+- [NIST Container Security Guide](https://csrc.nist.gov/publications/detail/sp/800-190/final) — SP 800-190
