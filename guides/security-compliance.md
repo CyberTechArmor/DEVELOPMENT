@@ -1,6 +1,326 @@
 # Security & Compliance Guide
 
-> **Scope:** This guide covers security controls and compliance requirements for containerized Node.js applications, with specific focus on **SOC 2 Type II** and **HIPAA** requirements.
+> **Scope:** This guide covers security controls and compliance requirements for containerized Node.js applications, with mappings across **SOC 2 Type II**, **HIPAA**, **PCI DSS**, **GDPR**, and **ISO 27001**.
+
+---
+
+## Framework Selection Guide
+
+```
+Processing payments?
+  └── Yes → PCI DSS (mandatory)
+
+Healthcare data (US)?
+  └── Yes → HIPAA (mandatory)
+
+EU users/customers?
+  └── Yes → GDPR (mandatory)
+
+Selling to enterprises?
+  └── US companies → SOC 2
+  └── International → ISO 27001
+  └── Both → SOC 2 + ISO 27001
+
+Running containers?
+  └── Add CIS Benchmarks for technical controls
+```
+
+---
+
+## Unified Compliance Mapping
+
+### The "Comply Once, Satisfy Many" Approach
+
+Instead of implementing controls per-framework, implement the **strictest requirement** and satisfy all frameworks simultaneously.
+
+### Control Mapping Matrix
+
+#### Access Control
+
+| Control | SOC 2 | HIPAA | PCI DSS | GDPR | ISO 27001 | Strictest |
+|---------|-------|-------|---------|------|-----------|-----------|
+| Unique user IDs | CC6.1 | §164.312(a)(2)(i) | 8.1.1 | Art 32 | A.9.2.1 | All equal |
+| MFA | CC6.1 | Addressable | 8.3.1 | Art 32 | A.9.4.2 | **PCI DSS** (required) |
+| Password complexity | CC6.1 | Addressable | 8.3.6 | - | A.9.4.3 | **PCI DSS** (12+ chars) |
+| Session timeout | CC6.1 | §164.312(a)(2)(iii) | 8.1.8 | - | A.11.2.8 | **PCI DSS** (15 min) |
+| Access logging | CC7.2 | §164.312(b) | 10.2 | Art 30 | A.12.4.1 | **HIPAA** (6yr retention) |
+
+**Unified Implementation:**
+```typescript
+// Satisfies: SOC 2, HIPAA, PCI DSS, GDPR, ISO 27001
+const accessControlConfig = {
+  authentication: {
+    mfaRequired: true,              // PCI DSS 8.3.1
+    passwordMinLength: 12,          // PCI DSS 8.3.6
+    passwordRequirements: {
+      uppercase: true,
+      lowercase: true,
+      numbers: true,
+      special: true
+    },
+    maxFailedAttempts: 6,           // PCI DSS 8.1.6
+    lockoutDuration: 30 * 60 * 1000 // 30 minutes
+  },
+  session: {
+    maxAge: 15 * 60 * 1000,         // 15 min (PCI DSS 8.1.8)
+    secure: true,
+    httpOnly: true,
+    sameSite: 'strict'
+  },
+  logging: {
+    retentionYears: 6,              // HIPAA maximum
+    events: ['auth', 'access', 'admin', 'data']
+  }
+};
+```
+
+#### Encryption
+
+| Control | SOC 2 | HIPAA | PCI DSS | GDPR | ISO 27001 | Strictest |
+|---------|-------|-------|---------|------|-----------|-----------|
+| TLS version | CC6.7 | §164.312(e)(1) | 4.1 | Art 32 | A.13.1.1 | **PCI DSS** (TLS 1.2+) |
+| Cipher suites | - | - | Appendix A2 | - | - | **PCI DSS** (specific list) |
+| Data at rest | CC6.7 | §164.312(a)(2)(iv) | 3.4 | Art 32 | A.10.1.1 | **PCI DSS** (AES-256) |
+| Key management | CC6.1 | Addressable | 3.5-3.6 | Art 32 | A.10.1.2 | **PCI DSS** (rotation) |
+
+**Unified Implementation:**
+```nginx
+# nginx.conf - Satisfies all frameworks
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ciphers ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305;
+ssl_prefer_server_ciphers on;
+ssl_session_timeout 1d;
+ssl_session_cache shared:SSL:50m;
+ssl_stapling on;
+ssl_stapling_verify on;
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+```
+
+#### Audit Logging
+
+| Control | SOC 2 | HIPAA | PCI DSS | GDPR | ISO 27001 | Strictest |
+|---------|-------|-------|---------|------|-----------|-----------|
+| Retention period | 1 year | 6 years | 1 year | Varies | Defined | **HIPAA** (6 years) |
+| Tamper protection | CC7.2 | §164.312(c)(1) | 10.5 | Art 32 | A.12.4.2 | All equal |
+| Time sync | CC7.2 | - | 10.4 | - | A.12.4.4 | **PCI DSS** (NTP) |
+| Log review | CC7.2 | §164.308(a)(1)(ii)(D) | 10.6 | - | A.12.4.1 | **PCI DSS** (daily) |
+
+**Unified Implementation:**
+```typescript
+// Audit log structure - Satisfies all frameworks
+interface AuditLog {
+  // Required by all
+  timestamp: string;        // ISO 8601, NTP synced (PCI 10.4)
+  eventType: string;
+  userId: string;
+  outcome: 'SUCCESS' | 'FAILURE';
+
+  // Access details (PCI 10.2, HIPAA)
+  ipAddress: string;
+  userAgent: string;
+
+  // Resource details (GDPR Art 30)
+  resource: string;
+  resourceId: string;
+  action: 'CREATE' | 'READ' | 'UPDATE' | 'DELETE';
+
+  // Data classification (GDPR, HIPAA)
+  dataClassification: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'PHI' | 'PCI';
+
+  // Immutability hash (PCI 10.5, SOC 2)
+  previousHash?: string;
+  hash: string;
+}
+
+// Retention: 6 years (HIPAA maximum)
+// Review: Daily (PCI DSS requirement)
+// Storage: Immutable, encrypted (All frameworks)
+```
+
+#### Vulnerability Management
+
+| Control | SOC 2 | HIPAA | PCI DSS | GDPR | ISO 27001 | Strictest |
+|---------|-------|-------|---------|------|-----------|-----------|
+| Scan frequency | Periodic | Risk-based | Quarterly | - | A.12.6.1 | **PCI DSS** (quarterly ASV) |
+| Patch timeline | Reasonable | Reasonable | 30 days critical | - | A.12.6.1 | **PCI DSS** (30 days) |
+| Pen testing | Annual | Recommended | Annual + after changes | - | A.18.2.3 | **PCI DSS** (+ segmentation) |
+
+**Unified Implementation:**
+```yaml
+# CI/CD Pipeline - Satisfies all frameworks
+vulnerability_management:
+  container_scanning:
+    tool: trivy
+    frequency: every_build
+    fail_on: HIGH,CRITICAL
+
+  dependency_scanning:
+    tool: npm_audit
+    frequency: daily
+    fail_on: high
+
+  asv_scanning:  # PCI DSS requirement
+    frequency: quarterly
+    vendor: approved_scanning_vendor
+
+  penetration_testing:
+    frequency: annual
+    after_significant_changes: true
+    scope: full_application
+
+  patching:
+    critical: 72_hours    # Stricter than PCI (30 days)
+    high: 7_days
+    medium: 30_days
+    low: 90_days
+```
+
+---
+
+## Framework-Specific Requirements
+
+### PCI DSS v4.0 (Payment Card Data)
+
+**When Required:** Any storage, processing, or transmission of cardholder data
+
+| Requirement | Description | Implementation |
+|-------------|-------------|----------------|
+| **Req 3** | Protect stored cardholder data | Encryption, tokenization, truncation |
+| **Req 4** | Encrypt transmission | TLS 1.2+ only |
+| **Req 6** | Develop secure systems | Secure SDLC, code review |
+| **Req 8** | Identify and authenticate | MFA, strong passwords |
+| **Req 10** | Log and monitor | Audit trails, daily review |
+| **Req 11** | Test security | Quarterly scans, annual pen test |
+| **Req 12** | Maintain policy | Security policies, training |
+
+**Critical Technical Controls:**
+```typescript
+// PCI DSS Cardholder Data Handling
+// NEVER store full PAN, CVV, or PIN
+
+// ✅ Tokenization (Recommended)
+const token = await paymentGateway.tokenize(cardNumber);
+await db.save({ userId, paymentToken: token });
+
+// ✅ Truncation for display
+const maskedPan = `****-****-****-${cardNumber.slice(-4)}`;
+
+// ❌ NEVER DO THIS
+// await db.save({ cardNumber, cvv, expiryDate });
+```
+
+### GDPR (EU Personal Data)
+
+**When Required:** Processing personal data of EU residents
+
+| Article | Requirement | Implementation |
+|---------|-------------|----------------|
+| **Art 5** | Data minimization | Collect only necessary data |
+| **Art 6** | Lawful basis | Document legal basis for processing |
+| **Art 7** | Consent | Explicit, withdrawable consent |
+| **Art 15-20** | Data subject rights | Export, delete, portability |
+| **Art 25** | Privacy by design | Default privacy settings |
+| **Art 32** | Security | Encryption, access control |
+| **Art 33** | Breach notification | 72 hours to authority |
+
+**Data Subject Rights Implementation:**
+```typescript
+// GDPR Data Subject Rights API
+
+// Art 15 - Right of Access
+app.get('/api/gdpr/my-data', authenticate, async (req, res) => {
+  const userData = await exportUserData(req.user.id);
+  res.json(userData);
+});
+
+// Art 17 - Right to Erasure
+app.delete('/api/gdpr/my-data', authenticate, async (req, res) => {
+  // Check for legal holds (HIPAA may override!)
+  if (await hasLegalHold(req.user.id)) {
+    return res.status(403).json({
+      error: 'Data subject to legal retention requirement'
+    });
+  }
+  await anonymizeUserData(req.user.id);
+  res.json({ status: 'Data anonymized' });
+});
+
+// Art 20 - Right to Portability
+app.get('/api/gdpr/export', authenticate, async (req, res) => {
+  const data = await exportUserData(req.user.id);
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', 'attachment; filename=my-data.json');
+  res.json(data);
+});
+```
+
+### ISO 27001 (Information Security Management)
+
+**When Required:** International enterprise sales, certification requirement
+
+| Control | Description | Implementation |
+|---------|-------------|----------------|
+| **A.5** | Information security policies | Documented, reviewed annually |
+| **A.6** | Organization of security | Roles, responsibilities, segregation |
+| **A.8** | Asset management | Inventory, classification, handling |
+| **A.9** | Access control | Policy, user management, system controls |
+| **A.10** | Cryptography | Key management, encryption policy |
+| **A.12** | Operations security | Procedures, malware, backup, logging |
+| **A.14** | System development | Secure SDLC, testing, data protection |
+
+**Key Difference from SOC 2:** ISO 27001 requires a formal Information Security Management System (ISMS) with continuous improvement (Plan-Do-Check-Act).
+
+---
+
+## Conflict Resolution
+
+### GDPR vs HIPAA Conflicts
+
+| Scenario | GDPR Says | HIPAA Says | Resolution |
+|----------|-----------|------------|------------|
+| Right to erasure | Must delete on request | Retain PHI 6 years | **HIPAA wins** (legal requirement) |
+| Breach notification | 72 hours to authority | 60 days to individuals | **Do both** (different recipients) |
+| Consent | Explicit required | Implied for treatment | **Get explicit** (satisfies both) |
+| Data portability | Required | No requirement | **Implement** (satisfies GDPR) |
+
+**Implementation Pattern:**
+```typescript
+async function handleDeletionRequest(userId: string): Promise<DeletionResult> {
+  const user = await getUser(userId);
+
+  // Check for HIPAA retention requirements
+  const phiRecords = await getPHIRecords(userId);
+  const retentionEnd = phiRecords.map(r =>
+    addYears(r.lastModified, 6)
+  );
+
+  const earliestDeletion = max(retentionEnd);
+
+  if (earliestDeletion > new Date()) {
+    // Cannot delete - HIPAA retention applies
+    return {
+      status: 'RETAINED',
+      reason: 'HIPAA_RETENTION',
+      eligibleForDeletion: earliestDeletion,
+      // GDPR requires we inform the user
+      message: `Data subject to healthcare retention until ${earliestDeletion.toISOString()}`
+    };
+  }
+
+  // Safe to delete/anonymize
+  await anonymizeUserData(userId);
+  return { status: 'DELETED' };
+}
+```
+
+### PCI DSS vs Other Frameworks
+
+PCI DSS is generally the **most prescriptive**. When in doubt:
+
+1. Follow PCI DSS technical requirements (they're specific)
+2. Add HIPAA retention periods (6 years vs PCI's 1 year)
+3. Implement GDPR data subject rights
+4. Document for SOC 2/ISO 27001 audit
 
 ---
 
@@ -508,10 +828,22 @@ Technical description of what failed.
 - [SOC 2 Trust Service Criteria](https://www.aicpa.org/resources/article/soc-2-trust-services-criteria) — AICPA official guide
 - [HIPAA Security Rule](https://www.hhs.gov/hipaa/for-professionals/security/index.html) — HHS official guidance
 - [HIPAA Technical Safeguards](https://www.hhs.gov/hipaa/for-professionals/security/guidance/index.html) — Implementation specs
+- [PCI DSS v4.0](https://www.pcisecuritystandards.org/document_library/) — Payment Card Industry standards
+- [PCI DSS Quick Reference](https://www.pcisecuritystandards.org/pdfs/pci_ssc_quick_guide.pdf) — Summary guide
+- [GDPR Official Text](https://gdpr-info.eu/) — Full regulation with commentary
+- [GDPR Compliance Checklist](https://gdpr.eu/checklist/) — Implementation guide
+- [ISO 27001 Overview](https://www.iso.org/isoiec-27001-information-security.html) — Official ISO page
 - [NIST Cybersecurity Framework](https://www.nist.gov/cyberframework) — Risk management framework
+- [NIST 800-53 Control Catalog](https://csrc.nist.gov/publications/detail/sp/800-53/rev-5/final) — Comprehensive controls
+
+### Framework Mapping Resources
+- [NIST CSF to ISO 27001 Mapping](https://www.nist.gov/cyberframework/framework) — Official crosswalk
+- [Unified Compliance Framework](https://www.unifiedcompliance.com/) — Control mapping database
+- [HITRUST CSF](https://hitrustalliance.net/csf/) — Healthcare framework (maps to HIPAA, SOC 2, NIST)
 
 ### Container Security
 - [CIS Docker Benchmark](https://www.cisecurity.org/benchmark/docker) — Security configuration
+- [CIS Kubernetes Benchmark](https://www.cisecurity.org/benchmark/kubernetes) — K8s security
 - [NIST SP 800-190](https://csrc.nist.gov/publications/detail/sp/800-190/final) — Container security guide
 - [OWASP Docker Security](https://cheatsheetseries.owasp.org/cheatsheets/Docker_Security_Cheat_Sheet.html) — Security checklist
 
@@ -520,13 +852,17 @@ Technical description of what failed.
 - [Falco](https://falco.org/) — Runtime security monitoring
 - [OPA/Gatekeeper](https://www.openpolicyagent.org/) — Policy enforcement
 - [Vault](https://www.vaultproject.io/) — Secrets management
+- [Snyk](https://snyk.io/) — Dependency and container scanning
 
 ### Audit & Logging
 - [ELK Stack](https://www.elastic.co/elastic-stack) — Log aggregation
 - [Splunk](https://www.splunk.com/) — Enterprise logging
 - [AWS CloudTrail](https://aws.amazon.com/cloudtrail/) — AWS audit logging
+- [Datadog](https://www.datadoghq.com/) — Observability and compliance
 
 ### Compliance Platforms
-- [Vanta](https://www.vanta.com/) — Automated SOC 2 compliance
+- [Vanta](https://www.vanta.com/) — SOC 2, HIPAA, ISO 27001, GDPR automation
 - [Drata](https://drata.com/) — Continuous compliance monitoring
-- [Secureframe](https://secureframe.com/) — SOC 2 + HIPAA automation
+- [Secureframe](https://secureframe.com/) — SOC 2, HIPAA, PCI DSS, ISO 27001
+- [Sprinto](https://sprinto.com/) — Compliance automation
+- [Tugboat Logic](https://tugboatlogic.com/) — Security assurance platform
