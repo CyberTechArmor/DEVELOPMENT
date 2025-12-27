@@ -143,8 +143,12 @@ RUN npx prisma generate  # ⚠️ Downloads Prisma 7.x, not 5.x!
 | "Prisma can't find libssl" | **Missing Alpine system dependency** (add openssl) |
 | "Password authentication failed" | **Volume credential mismatch** (old creds in volume) |
 | "Works first time but fails on re-install" | **Stale Docker volumes** (need `down -v`) |
-| "tsx/ts-node not found" | **TypeScript runner missing** (compile to JS during build) |
+| "tsx/ts-node not found" | **TypeScript runner missing** (compile to JS or install tsx globally) |
 | "No migrations found" | **Wrong Prisma command** (use `db push` if no migrations dir) |
+| "tsc can't find module" | **Standalone compilation failure** (tsc can't resolve imports without tsconfig) |
+| "Build step passed but it failed" | **Silent failure** (command has `\|\| true` masking errors) |
+| "Build killed" or OOM | **Out of memory** (add swap space, limit Node memory) |
+| "Build takes forever on VPS" | **Resource constrained** (1-core + low RAM needs optimization) |
 
 ---
 
@@ -446,9 +450,9 @@ docker compose pull
 docker compose up -d
 ```
 
-### 9. Compile TypeScript scripts for production
+### 9. Handle TypeScript scripts in production
 
-TypeScript runners like `tsx`, `ts-node`, and `ts-jest` are typically devDependencies. If your project has TypeScript scripts (like `prisma/seed.ts`) that need to run in production, they must be compiled during build.
+TypeScript runners like `tsx`, `ts-node`, and `ts-jest` are typically devDependencies. If your project has TypeScript scripts (like `prisma/seed.ts`) that need to run in production, you have several options.
 
 **The error:**
 ```
@@ -464,40 +468,264 @@ sh: tsx: not found
 }
 ```
 
-**The fix — compile during Docker build:**
+#### Option A: Install tsx globally in production (Recommended for scripts with imports)
+
+If your TypeScript script has imports from your project, **standalone tsc compilation won't work**:
+
+```typescript
+// prisma/seed.ts
+import { hashPassword } from '../src/utils/auth';  // ← tsc can't resolve this!
+import { UserRole } from '../src/types';            // ← or this!
+```
+
+**Why tsc fails:**
+```bash
+# This FAILS - tsc can't resolve imports without full project context
+tsc prisma/seed.ts --outDir prisma
+# Error: Cannot find module '../src/utils/auth'
+```
+
+**The fix — install tsx globally in production image:**
 
 ```dockerfile
-# After building the main application, compile any TypeScript scripts
+# Production stage
+FROM node:20-alpine AS production
+
+# Install tsx globally for running TypeScript scripts with imports
+RUN npm install -g tsx
+
+# Copy the source files that seed.ts imports
+COPY --from=builder /app/apps/api/src/types ./apps/api/src/types
+COPY --from=builder /app/apps/api/src/utils ./apps/api/src/utils
+
+# Now tsx can run seed.ts with all its imports
+```
+
+**Run in production:**
+```bash
+# In install.sh or docker compose
+docker compose run --rm api sh -c "cd /app/apps/api && tsx prisma/seed.ts"
+```
+
+#### Option B: Compile during build (Only for scripts WITHOUT imports)
+
+If your TypeScript script is self-contained with no project imports:
+
+```dockerfile
+# After building the main application, compile standalone scripts
 RUN cd apps/api && ../../node_modules/.bin/tsc prisma/seed.ts \
     --outDir prisma \
     --esModuleInterop \
     --skipLibCheck \
-    --resolveJsonModule || true
+    --resolveJsonModule
 ```
 
-**Then run with Node in production:**
+**Then run with Node:**
 ```bash
-# Instead of: npx prisma db seed (uses tsx)
 node prisma/seed.js
 ```
 
-**Common TypeScript scripts that need compilation:**
+#### Option C: Write production scripts in JavaScript
 
-| Script | Location | Production Use |
-|--------|----------|----------------|
-| Seed script | `prisma/seed.ts` | Initial data setup |
-| DB migrations | `scripts/migrate.ts` | Schema updates |
-| Admin scripts | `scripts/*.ts` | Maintenance tasks |
-
-**Alternative: Keep TypeScript out of production entirely**
-
-Write production scripts in JavaScript from the start:
+Keep TypeScript out of production entirely:
 ```javascript
-// prisma/seed.js - works without tsx
+// prisma/seed.js - works without tsx or compilation
 const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcrypt');  // Use npm package, not project imports
+
 const prisma = new PrismaClient();
 // ...
 ```
+
+**Comparison:**
+
+| Approach | Works with imports | Build complexity | Runtime overhead |
+|----------|-------------------|------------------|------------------|
+| tsx global | ✅ Yes | Low | Minimal (~50MB) |
+| tsc compile | ❌ No (standalone only) | Medium | None |
+| JavaScript | ❌ N/A | None | None |
+
+**Common TypeScript scripts that need compilation:**
+
+| Script | Location | Has Imports? | Recommended Approach |
+|--------|----------|--------------|---------------------|
+| Seed script | `prisma/seed.ts` | Usually yes | tsx global |
+| DB migrations | `scripts/migrate.ts` | Varies | Check imports first |
+| Admin scripts | `scripts/*.ts` | Usually yes | tsx global |
+
+### 10. Avoid silent failures with `|| true`
+
+Using `|| true` in Dockerfile RUN commands **masks failures** — the build succeeds but the step didn't actually work.
+
+**The problem:**
+```dockerfile
+# ❌ Bad - silently fails, build continues
+RUN tsc prisma/seed.ts --outDir prisma || true
+
+# What happens:
+# 1. tsc fails (can't resolve imports)
+# 2. || true makes exit code 0
+# 3. Build continues "successfully"
+# 4. seed.js doesn't exist at runtime → crash
+```
+
+**Why this is dangerous:**
+- Build appears to succeed
+- Error only discovered at runtime (when seed fails)
+- Hard to debug — no error message in build logs
+- Creates false confidence in the build
+
+**The fix — fail fast or handle explicitly:**
+
+```dockerfile
+# ✅ Good - fails immediately if tsc fails
+RUN tsc prisma/seed.ts --outDir prisma
+
+# ✅ Also good - explicit fallback with logging
+RUN tsc prisma/seed.ts --outDir prisma \
+    || (echo "WARNING: seed.ts compilation failed, using tsx at runtime" && exit 0)
+
+# ✅ Best - use the right tool (tsx for scripts with imports)
+RUN npm install -g tsx
+# Then run with tsx at runtime instead of compiling
+```
+
+**When `|| true` is acceptable:**
+
+| Scenario | Example | Why OK |
+|----------|---------|--------|
+| Optional cleanup | `rm -rf temp || true` | Non-critical |
+| Check existence | `docker compose down -v 2>/dev/null \|\| true` | May not exist |
+| First-run detection | `test -f .initialized \|\| true` | Expected to fail |
+
+**Never use `|| true` for:**
+- Compilation steps
+- Dependency installation
+- Critical file operations
+- Migrations or data operations
+
+### 11. Optimize for low-resource VPS (≤2GB RAM, ≤2 cores)
+
+Building Node.js applications with TypeScript compilation requires significant memory. On low-resource VPS systems, builds can OOM (out of memory) or freeze.
+
+**Symptoms of resource constraints:**
+```
+FATAL ERROR: CALL_AND_RETRY_LAST Allocation failed - JavaScript heap out of memory
+Killed
+Build process hangs indefinitely
+```
+
+#### Hardware detection
+
+Add hardware detection to install scripts:
+
+```bash
+# Get total RAM in MB
+get_total_ram_mb() {
+    grep MemTotal /proc/meminfo | awk '{print int($2/1024)}'
+}
+
+# Get CPU cores
+get_cpu_cores() {
+    grep -c ^processor /proc/cpuinfo
+}
+
+# Check if low-resource system
+is_low_resource_system() {
+    local ram_mb=$(get_total_ram_mb)
+    local cores=$(get_cpu_cores)
+    [ "$ram_mb" -le 2048 ] || [ "$cores" -le 1 ]
+}
+```
+
+#### Swap space configuration
+
+For systems with ≤2GB RAM, configure swap space (2x RAM):
+
+```bash
+configure_swap() {
+    local ram_mb=$(get_total_ram_mb)
+    local swap_mb=$((ram_mb * 2))
+
+    # Create swap file
+    sudo fallocate -l ${swap_mb}M /swapfile
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+
+    # Persist across reboots
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+    # Optimize swappiness for builds
+    sudo sysctl vm.swappiness=60
+}
+```
+
+#### Limit Node.js memory during builds
+
+```dockerfile
+# Limit Node.js memory to prevent OOM
+ENV NODE_OPTIONS="--max-old-space-size=512"
+
+# For 1GB RAM VPS, this prevents Node from consuming all memory
+# Build will be slower but won't OOM
+```
+
+#### Docker daemon optimization
+
+Create `/etc/docker/daemon.json`:
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  },
+  "storage-driver": "overlay2"
+}
+```
+
+#### Clear caches before build
+
+```bash
+# Clear page cache on very low memory systems
+if [ "$(get_total_ram_mb)" -le 1024 ]; then
+    sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+fi
+```
+
+#### Expected build times on low-resource VPS
+
+| Hardware | npm ci | Prisma generate | TypeScript build | Total |
+|----------|--------|-----------------|------------------|-------|
+| 1-core, 1GB | ~45s | ~10min | ~12min | ~25min |
+| 2-core, 2GB | ~30s | ~4min | ~5min | ~10min |
+| 4-core, 4GB | ~20s | ~1min | ~2min | ~4min |
+
+**Optimization impact:**
+
+| Optimization | Effect |
+|--------------|--------|
+| 2GB swap on 1GB RAM | Prevents OOM kills |
+| `--max-old-space-size=512` | Limits Node memory, prevents freeze |
+| Docker layer caching (no `--no-cache`) | Rebuilds drop from 25min to 2-3min |
+| Pre-built images from registry | Eliminates build entirely on VPS |
+
+#### Alternative: Build elsewhere, pull images
+
+For very constrained systems, build on a more powerful machine:
+
+```bash
+# On powerful machine:
+docker build -t registry.example.com/myapp:latest .
+docker push registry.example.com/myapp:latest
+
+# On VPS:
+docker pull registry.example.com/myapp:latest
+# Instant — no build required
+```
+
+This eliminates the build bottleneck entirely on low-resource VPS.
 
 ---
 
@@ -698,8 +926,12 @@ echo -e "\n=== Audit Complete ==="
 | Using `npx` slows build by 4-5 min | Use `./node_modules/.bin/prisma` instead |
 | DB auth fails after re-install | Old volume has old creds; use `docker compose down -v` |
 | `down -v` in update script | Never use `-v` in updates — destroys data! |
-| `tsx` / `ts-node` not found in prod | Compile `.ts` scripts during build; run with `node` |
+| `tsx` / `ts-node` not found in prod | Install `tsx` globally in prod OR use it only if TS has imports |
 | `migrate deploy` with no migrations | Use `db push` if no `prisma/migrations/` directory |
+| `tsc seed.ts` fails with imports | Use `tsx` (handles imports) or compile entire project |
+| Silent build failures with `\|\| true` | Remove `\|\| true` or add explicit error handling |
+| Build OOMs on low-resource VPS | Add swap space; use `NODE_OPTIONS=--max-old-space-size=512` |
+| Docker build freezes on 1GB VPS | Configure swap (2x RAM), limit concurrent processes |
 
 ---
 
@@ -719,6 +951,8 @@ echo -e "\n=== Audit Complete ==="
 - [ ] Alpine images have required system deps (`openssl` for Prisma, etc.)
 - [ ] Source maps disabled or excluded from final image
 - [ ] No debug tools or dev utilities in production image
+- [ ] No `|| true` on critical commands (compilation, migrations)
+- [ ] TypeScript scripts with imports use tsx (not tsc standalone)
 
 ### Shell Scripts & Runtime
 - [ ] Shell scripts use `/app/node_modules/.bin/` instead of `npx`
@@ -740,6 +974,13 @@ echo -e "\n=== Audit Complete ==="
 - [ ] Update script does NOT use `-v` (preserves data)
 - [ ] Database credentials match between `.env` and existing volumes
 - [ ] Production volumes backed up before any destructive operations
+
+### Low-Resource VPS (≤2GB RAM)
+- [ ] Swap space configured (2x RAM recommended)
+- [ ] `NODE_OPTIONS="--max-old-space-size=512"` set in Dockerfile
+- [ ] Docker daemon optimized (log rotation, overlay2 storage)
+- [ ] Removed `--no-cache` from docker build (leverage layer caching)
+- [ ] Consider pre-building images on more powerful machine
 
 ### Verification Commands
 
